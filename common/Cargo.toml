@@ -1,0 +1,22 @@
+[package]
+name = "common"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-postgres = {version="0.7",features=["with-chrono-0_4","with-uuid-1"]}
+deadpool-postgres = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+serde = { version = "1", features = ["derive"] }
+poem = "3.1.11"
+poem-openapi = {version="5.1.15",features=["swagger-ui","chrono"]}
+anyhow = "1.0.98"
+url = "2.5.4"
+config = "0.15.11"
+postgres-types = { version = "0.2.9", features = ["derive"] }
+redis = { version = "0.32.0", features = ["tokio-comp"] }
+serde_json = "1.0"
+async-nats = "0.42.0"
+futures = "0.3.31"
