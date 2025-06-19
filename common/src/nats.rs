@@ -14,16 +14,21 @@ impl NatsClient {
         let js = jetstream::new(connection);
         Ok(Self { js })
     }
+
+    pub async fn publish(&self, subject: String, data: Vec<u8>) -> Result<()> {
+        self.js.publish(subject.clone(), data.into()).await?;
+        Ok(())
+    }
 }
 
-pub struct JobQueue {
+pub struct NatsConsumer {
     js: Context,
     stream: String,
     subject: String,
     consumer: PullConsumer,
 }
 
-impl JobQueue {
+impl NatsConsumer {
     pub async fn new(
         nats: &NatsClient,
         stream: &str,
@@ -55,11 +60,6 @@ impl JobQueue {
             subject: subject.to_string(),
             consumer,
         })
-    }
-
-    pub async fn publish(&self, data: Vec<u8>) -> Result<()> {
-        self.js.publish(self.subject.clone(), data.into()).await?;
-        Ok(())
     }
 
     pub async fn pull(&self) -> Result<Option<Vec<u8>>> {

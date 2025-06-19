@@ -1,6 +1,11 @@
 use std::sync::Arc;
 
-use common::{db, error::StringError, model::{Language, NewSubmission, RedisSubmission, Submission, SubmissionStatus}, nats::{JobQueue, NatsClient}};
+use common::{
+    db,
+    error::StringError,
+    model::{Language, NewSubmission, RedisSubmission, Submission, SubmissionStatus},
+    nats::NatsClient,
+};
 use poem::{
     EndpointExt, Result, Route, Server,
     error::InternalServerError,
@@ -14,9 +19,7 @@ use poem_openapi::{
 };
 use tokio_postgres::types::ToSql;
 
-use crate::{
-    config::{AppConfig, load_config},
-};
+use crate::config::{AppConfig, load_config};
 
 mod config;
 
@@ -116,8 +119,8 @@ impl Api {
         let submission = RedisSubmission::from((id_str.clone(), new_submission.0));
         let json = serde_json::to_vec(&submission)
             .map_err(|_| InternalServerError(StringError::new("couldnot serialize submission")))?;
-        data.queue
-            .publish(json)
+        data.nats
+            .publish("submission.new".to_string(), json)
             .await
             .map_err(|_| InternalServerError(StringError::new("couldnot serialize submission")))?;
 
@@ -155,7 +158,7 @@ impl Api {
 struct AppData {
     db: db::Db,
     config: AppConfig,
-    queue: JobQueue,
+    nats: NatsClient,
 }
 
 #[tokio::main]
@@ -163,12 +166,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL not found");
 
     let client = NatsClient::new("localhost").await?;
-    let queue = JobQueue::new(&client, "SUBMISSIONS", "submission.new", "worker1").await?;
 
     let app_data = Arc::new(AppData {
         db: db::Db::init(&database_url).await.expect("couldnot init db"),
         config: load_config(),
-        queue,
+        nats: client,
     });
 
     let api_service = OpenApiService::new(Api, "Executor", "0.0.1").server("http://localhost:3000");
