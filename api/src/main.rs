@@ -3,12 +3,12 @@ use std::sync::Arc;
 use common::{
     db,
     error::StringError,
-    model::{Language, NewSubmission, RedisSubmission, Submission, SubmissionStatus},
+    model::{NatsSubmission, NewSubmission, Submission, SubmissionStatus},
     nats::NatsClient,
 };
 use poem::{
     EndpointExt, Result, Route, Server,
-    error::InternalServerError,
+    error::{BadRequest, InternalServerError},
     listener::TcpListener,
     middleware::Cors,
     web::{Data, Path},
@@ -47,9 +47,14 @@ impl Api {
         data: Data<&Arc<AppData>>,
         new_submission: Json<NewSubmission>,
     ) -> Result<Json<SubmissionResponse>> {
+        let language = data
+            .config
+            .get_language(&new_submission.language)
+            .ok_or(BadRequest(StringError::new("unregonised language")))?;
+
         let params: &[&(dyn ToSql + Sync)] = &[
             &new_submission.source_code,
-            &new_submission.language,
+            &language.name,
             &new_submission.compiler_options,
             &new_submission.command_line_arguments,
             &new_submission.stdin,
@@ -116,7 +121,7 @@ impl Api {
         let id: Uuid = row.get("id");
         let id_str = id.to_string();
 
-        let submission = RedisSubmission::from((id_str.clone(), new_submission.0));
+        let submission = NatsSubmission::from((id_str.clone(), new_submission.0, language));
         let json = serde_json::to_vec(&submission)
             .map_err(|_| InternalServerError(StringError::new("couldnot serialize submission")))?;
         data.nats
@@ -150,8 +155,8 @@ impl Api {
     }
 
     #[oai(path = "/languages/", method = "get")]
-    async fn languages(&self) -> Result<Json<Vec<Language>>> {
-        Ok(Json(Language::all()))
+    async fn languages(&self, data: Data<&Arc<AppData>>) -> Result<Json<Vec<String>>> {
+        Ok(Json(data.config.get_language_names()))
     }
 }
 
@@ -169,7 +174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_data = Arc::new(AppData {
         db: db::Db::init(&database_url).await.expect("couldnot init db"),
-        config: load_config(),
+        config: load_config()?,
         nats: client,
     });
 

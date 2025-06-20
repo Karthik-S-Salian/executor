@@ -1,4 +1,3 @@
-use std::fmt;
 use chrono::{DateTime, Utc};
 use poem_openapi::Enum;
 use poem_openapi::Object;
@@ -51,57 +50,11 @@ impl std::str::FromStr for SubmissionStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Enum, ToSql, FromSql)]
-#[serde(rename_all = "lowercase")]
-#[oai(rename_all = "lowercase")] 
-#[postgres(name = "language", rename_all = "lowercase")]
-pub enum Language {
-    Rust,
-    Python,
-    Cpp,
-    C,
-}
-
-impl std::str::FromStr for Language {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        use Language::*;
-        Ok(match s {
-            "rust" => Rust,
-            "python" => Python,
-            "cpp" => Cpp,
-            "c" => C,
-            _ => return Err(()),
-        })
-    }
-}
-
-impl fmt::Display for Language {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use Language::*;
-        let name = match self {
-            Rust => "rust",
-            Python => "python",
-            Cpp => "cpp",
-            C => "c",
-        };
-        write!(f, "{}", name)
-    }
-}
-
-impl Language {
-    pub fn all() -> Vec<Language> {
-        use Language::*;
-        vec![Rust, Python, Cpp, C]
-    }
-}
-
 #[derive(Debug, Clone, Object)]
 pub struct Submission {
     pub id: String,
     pub source_code: String,
-    pub language: Language,
+    pub language: String,
     pub compiler_options: Option<String>,
     pub command_line_arguments: Option<String>,
     pub stdin: Option<String>,
@@ -139,7 +92,7 @@ impl From<Row> for Submission {
         Submission {
             id: row.get("id"),
             source_code: row.get("source_code"),
-            language: row.get::<_, String>("language").parse().unwrap(),
+            language: row.get("language"),
             compiler_options: row.try_get("compiler_options").ok().flatten(),
             command_line_arguments: row.try_get("command_line_arguments").ok().flatten(),
             stdin: row.try_get("stdin").ok().flatten(),
@@ -186,7 +139,7 @@ impl From<Row> for Submission {
 #[derive(Debug, Clone, Object)]
 pub struct NewSubmission {
     pub source_code: String,
-    pub language: Language,
+    pub language: String,
     pub compiler_options: Option<String>,
     pub command_line_arguments: Option<String>,
     pub stdin: Option<String>,
@@ -209,7 +162,7 @@ pub struct NewSubmission {
 
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct RedisSubmission{
+pub struct NatsSubmission{
     pub id:String,
     pub source_code: String,
     pub language: Language,
@@ -234,12 +187,12 @@ pub struct RedisSubmission{
 }
 
 
-impl From<(String, NewSubmission)> for RedisSubmission {
-    fn from((id, ns): (String, NewSubmission)) -> Self {
+impl From<(String, NewSubmission,Language)> for NatsSubmission {
+    fn from((id, ns,lang): (String, NewSubmission,Language)) -> Self {
         Self {
             id: id,
             source_code: ns.source_code,
-            language: ns.language,
+            language: lang,
             compiler_options: ns.compiler_options,
             command_line_arguments: ns.command_line_arguments,
             stdin: ns.stdin,
@@ -260,4 +213,15 @@ impl From<(String, NewSubmission)> for RedisSubmission {
             callback_url: ns.callback_url,
         }
     }
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Language {
+    pub name: String,
+    pub source_file: String,
+    pub file_extension: String,
+    pub compile_cmd: Option<String>,
+    pub run_cmd: String,
+    pub allow_network: bool,
 }

@@ -20,25 +20,11 @@ BEGIN
   END IF;
 END$$;
 
-
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'language') THEN
-    CREATE TYPE language AS ENUM (
-      'rust',
-      'python',
-      'cpp',
-      'c'
-    );
-  END IF;
-END$$;
-
-
 CREATE TABLE IF NOT EXISTS submissions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
   source_code TEXT NOT NULL,
-  language language NOT NULL,
+  language TEXT NOT NULL,
   compiler_options TEXT,
   command_line_arguments TEXT,
   stdin TEXT,
