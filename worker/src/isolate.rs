@@ -18,11 +18,12 @@ pub struct Sandbox {
     pub stderr_file: PathBuf,
 }
 
+use std::collections::HashMap;
+use tokio::fs;
 
 impl Sandbox {
-    pub fn new(submission_id: u64) -> Result<Self> {
-        let box_id = (submission_id % 2_147_483_647) as u32;
-        let isolate_cmd = format!("isolate --cg -b {} --init", box_id);
+    pub fn new(box_id: u32) -> Result<Self> {
+        let isolate_cmd = format!("sudo isolate --cg -b {} --init", box_id);
         let output = std::process::Command::new("sh")
             .arg("-c")
             .arg(&isolate_cmd)
@@ -61,8 +62,9 @@ impl Sandbox {
                 .replace(['$', '&', ';', '<', '>', '|', '`'], "");
             writeln!(file, "{}", compile_cmd.replace("%s", &sanitized))?;
 
-            let output = Command::new("isolate")
+            let output = Command::new("sudo")
                 .args([
+                    "isolate",
                     "--cg",
                     "-b",
                     &self.box_id.to_string(),
@@ -109,9 +111,11 @@ impl Sandbox {
             .replace(['$', '&', ';', '<', '>', '|', '`'], "");
         writeln!(file, "{} {}", submission.language.run_cmd, args)?;
 
-        let mut command = Command::new("isolate");
+        let mut command = Command::new("sudo");
         command.args([
+            "isolate",
             "--cg",
+            "--silent",
             "-b",
             &self.box_id.to_string(),
             "-M",
@@ -125,11 +129,10 @@ impl Sandbox {
             &submission.wall_time_limit.unwrap_or(4.0).to_string(),
             "-k",
             &submission.stack_limit.unwrap_or(67108864).to_string(),
-            "-p",
-            &submission
-                .max_processes_and_or_threads
-                .unwrap_or(50)
-                .to_string(),
+            &format!(
+                "-p{}",
+                submission.max_processes_and_or_threads.unwrap_or(50)
+            ),
             "-m",
             &submission.memory_limit.unwrap_or(262144.0).to_string(),
             "-f",
@@ -146,9 +149,34 @@ impl Sandbox {
             .stderr(Stdio::from(File::create(&self.stderr_file)?))
             .current_dir(&self.boxdir);
 
+        command.kill_on_drop(true);
+
         let _status = command.output().await?;
 
         Ok(())
+    }
+
+    pub async fn read_metadata(&self) -> Result<HashMap<String, String>> {
+        let contents = fs::read_to_string(&self.metadata_file).await?;
+        let mut map = HashMap::new();
+
+        for line in contents.lines() {
+            if let Some((key, val)) = line.split_once(':') {
+                map.insert(key.trim().to_string(), val.trim().to_string());
+            }
+        }
+
+        Ok(map)
+    }
+
+    pub async fn read_output(&self) -> Result<ProgramOutput> {
+        let stdout = tokio::fs::read_to_string(&self.stdout_file).await.ok();
+        let stderr = tokio::fs::read_to_string(&self.stderr_file).await.ok();
+
+        let stdout = stdout.and_then(|s| if s.trim().is_empty() { None } else { Some(s) });
+        let stderr = stderr.and_then(|s| if s.trim().is_empty() { None } else { Some(s) });
+
+        Ok(ProgramOutput { stdout, stderr })
     }
 
     pub async fn cleanup(&self) -> Result<()> {
@@ -167,11 +195,17 @@ impl Sandbox {
             .status()
             .await;
 
-        Command::new("isolate")
-            .args(["--cg", "-b", &self.box_id.to_string(), "--cleanup"])
+        Command::new("sudo")
+            .args(["isolate","--cg", "-b", &self.box_id.to_string(), "--cleanup"])
             .status()
             .await?;
 
         Ok(())
     }
+}
+
+#[derive(Debug)]
+pub struct ProgramOutput {
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
 }

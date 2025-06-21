@@ -1,13 +1,39 @@
 use std::sync::Arc;
 
 use common::nats::{NatsClient, NatsConsumer};
-use uuid::Uuid;
+use tokio::sync::Mutex;
 
 use crate::{config::load_config, workers::spawn_workers};
 
 mod config;
-mod workers;
 mod isolate;
+mod workers;
+
+pub struct BoxIdManager {
+    next: Mutex<u32>,
+}
+
+impl BoxIdManager {
+    pub fn new() -> Self {
+        Self {
+            next: Mutex::new(0),
+        }
+    }
+
+    pub async fn get_next_id(&self) -> u32 {
+        let mut lock = self.next.lock().await;
+        let id = *lock;
+        *lock = lock.wrapping_add(1);
+        id
+    }
+}
+
+struct AppState {
+    box_counter: BoxIdManager,
+    queue:NatsConsumer
+}
+
+impl AppState {}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -17,12 +43,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &client,
         "SUBMISSIONS",
         "submission.new",
-        &Uuid::new_v4().to_string(),
+        "submissions",
     )
     .await?;
 
-    let queue = Arc::new(queue);
+    let app_state = Arc::new(AppState {
+        box_counter: BoxIdManager::new(),
+        queue
+    });
 
-    spawn_workers(config.num_workers as usize, queue).await?;
+    spawn_workers(app_state, config.num_workers as usize).await?;
     Ok(())
 }

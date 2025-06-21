@@ -1,0 +1,14 @@
+[[languages]]
+name = "c"
+source_file = "main.c"
+file_extension = "c"
+compile_cmd = "gcc -o main main.c"
+run_cmd = "./main"
+allow_network = false
+
+[[languages]]
+name = "python"
+source_file = "main.py"
+file_extension = "py"
+run_cmd = "python3 main.py"
+allow_network = false

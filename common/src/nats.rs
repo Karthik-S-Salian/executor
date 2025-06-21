@@ -45,13 +45,17 @@ impl NatsConsumer {
                 ..Default::default()
             })
             .await?
-            .create_consumer(jetstream::consumer::pull::Config {
-                durable_name: Some(durable.to_string()),
-                deliver_policy: DeliverPolicy::All,
-                ack_policy: AckPolicy::Explicit,
-                max_ack_pending: 1,
-                ..Default::default()
-            })
+            .get_or_create_consumer(
+                durable,
+                jetstream::consumer::pull::Config {
+                    durable_name: Some(durable.to_string()),
+                    deliver_policy: DeliverPolicy::All,
+                    ack_policy: AckPolicy::Explicit,
+                    // filter_subject: subject.to_string(),
+                    max_ack_pending: 1,
+                    ..Default::default()
+                },
+            )
             .await?;
 
         Ok(Self {

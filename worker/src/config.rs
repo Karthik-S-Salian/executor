@@ -11,7 +11,7 @@ pub struct AppConfig {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        Self { num_workers: 1 }
+        Self { num_workers: -1 }
     }
 }
 
