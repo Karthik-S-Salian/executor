@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
 use poem_openapi::Enum;
 use poem_openapi::Object;
+use postgres_types::{FromSql, ToSql};
 use serde::{Deserialize, Serialize};
 use tokio_postgres::Row;
-use postgres_types::{ToSql, FromSql};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Enum, ToSql, FromSql)]
 #[serde(rename_all = "lowercase")]
@@ -90,7 +90,7 @@ pub struct Submission {
 impl From<Row> for Submission {
     fn from(row: Row) -> Self {
         Submission {
-            id: row.get("id"),
+            id: row.get::<_, uuid::Uuid>("id").to_string(),
             source_code: row.get("source_code"),
             language: row.get("language"),
             compiler_options: row.try_get("compiler_options").ok().flatten(),
@@ -126,7 +126,7 @@ impl From<Row> for Submission {
             message: row.try_get("message").ok().flatten(),
             exit_code: row.try_get("exit_code").ok().flatten(),
             exit_signal: row.try_get("exit_signal").ok().flatten(),
-            status: row.get::<_, String>("status").parse().unwrap(),
+            status: row.get("status"),
             created_at: row.get("created_at"),
             finished_at: row.try_get("finished_at").ok().flatten(),
             time: row.try_get("time").ok().flatten(),
@@ -160,10 +160,9 @@ pub struct NewSubmission {
     pub callback_url: Option<String>,
 }
 
-
 #[derive(Debug, Serialize, Deserialize)]
-pub struct NatsSubmission{
-    pub id:String,
+pub struct NatsSubmission {
+    pub id: String,
     pub source_code: String,
     pub language: Language,
     pub compiler_options: Option<String>,
@@ -186,9 +185,8 @@ pub struct NatsSubmission{
     pub callback_url: Option<String>,
 }
 
-
-impl From<(String, NewSubmission,Language)> for NatsSubmission {
-    fn from((id, ns,lang): (String, NewSubmission,Language)) -> Self {
+impl From<(String, NewSubmission, Language)> for NatsSubmission {
+    fn from((id, ns, lang): (String, NewSubmission, Language)) -> Self {
         Self {
             id: id,
             source_code: ns.source_code,
@@ -204,7 +202,8 @@ impl From<(String, NewSubmission,Language)> for NatsSubmission {
             stack_limit: ns.stack_limit,
             max_processes_and_or_threads: ns.max_processes_and_or_threads,
             enable_per_process_and_thread_time_limit: ns.enable_per_process_and_thread_time_limit,
-            enable_per_process_and_thread_memory_limit: ns.enable_per_process_and_thread_memory_limit,
+            enable_per_process_and_thread_memory_limit: ns
+                .enable_per_process_and_thread_memory_limit,
             max_file_size: ns.max_file_size,
             redirect_stderr_to_stdout: ns.redirect_stderr_to_stdout,
             enable_network: ns.enable_network,
@@ -214,7 +213,6 @@ impl From<(String, NewSubmission,Language)> for NatsSubmission {
         }
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Language {

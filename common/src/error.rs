@@ -4,7 +4,7 @@ use std::{error::Error, fmt};
 pub struct StringError(String);
 
 impl StringError {
-    pub fn new(e:&str)->StringError{
+    pub fn new(e: &str) -> StringError {
         StringError(e.to_string())
     }
 }
@@ -16,4 +16,3 @@ impl fmt::Display for StringError {
 }
 
 impl Error for StringError {}
-
