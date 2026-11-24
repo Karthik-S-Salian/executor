@@ -1,83 +1,129 @@
 # Secure Code Execution Engine in Rust
 
-A secure, sandboxed code execution engine written in Rust, designed to safely run untrusted user-submitted code using [`isolate`](https://github.com/ioi/isolate). This system is ideal for online judges, coding platforms, or automated assessment tools.
+A sandboxed code-execution service for online judges and assessment tools. Untrusted
+submissions are queued through NATS JetStream, executed by a worker pool using
+[`isolate`](https://github.com/ioi/isolate), and judged against expected output.
+Submissions and results live in Postgres.
 
 ## Architecture
+
 ![architecture diagram](architecture.png)
 
-## ✨ Features
+Crates in one Cargo workspace:
 
-- 🛡️ **Secure Sandbox:** Uses Linux namespaces, control groups (cgroups), and the `isolate` utility to safely execute code.
-- 🔤 **Multi-language Support:** Execute code in languages like Python, C, C++, and more, using configurable compile/run commands.
-- 📦 **Resource Limits:** Enforces CPU time, wall time, memory, stack size, file size, and process count limits.
-- 📥 **Standard I/O Handling:** Supports input via stdin and captures stdout/stderr for validation.
-- 📊 **Metadata Collection:** Collects detailed execution metadata such as memory used, time taken, exit code, signals, and more.
-- 🔁 **Multiple Runs:** Runs submissions multiple times and averages time/memory as per configuration.
-- 🔄 **Callback Support:** Can notify external systems via HTTP callback on execution completion.
+| Crate | Responsibility |
+|---|---|
+| `api` | HTTP + OpenAPI: create/read submissions, list languages, requeue lost jobs |
+| `worker` | Pulls jobs, compiles/runs them in isolate, writes results back to Postgres |
+| `common` | Postgres pool, NATS client/consumer, shared models |
+| `sandbox` | Rootless Linux confinement library (namespaces, cgroup v2, seccomp, Landlock); not wired into the worker yet |
 
-## 🚀 Quick Start
+The checked-in worker still uses `isolate`. The `sandbox` crate is the intended
+replacement; it is cross-compiled but must be validated on a real Linux worker
+(first with `sandbox-probe`, then with its ignored integration tests) before it
+takes traffic. See [`sandbox/README.md`](sandbox/README.md) for the host
+requirements and the exact verification commands.
 
-### Prerequisites
+Flow: `POST /submissions/new` inserts a row (`inqueue`) → publishes to NATS
+`submission.new` → a worker claims the row atomically (`processing`) → isolate
+`--init`, write source/stdin, optional compile, run (possibly N times) → status,
+output and resource usage are written back → message acked. Failed jobs are
+`nak`ed for redelivery (max 5 attempts). Rows stuck in `inqueue` for 60s are
+re-published by the API's sweeper; atomic claiming makes duplicates harmless.
 
-- Rust (stable)
-- `isolate` installed with `sudo` access  
-  Install it on Pop!_OS / Ubuntu:
+## Requirements
 
-  ```bash
-  sudo apt install isolate
-  ```
+- Rust stable (2024 edition)
+- Linux host for the worker with:
+  - [`isolate`](https://github.com/ioi/isolate) installed (`sudo apt install isolate`)
+  - the compilers/interpreters named in your language config
+  - permission to create cgroups (run as a systemd service or root; no `sudo` wrapper)
+- Postgres 14+ and NATS 2.10+ with JetStream enabled
 
-### Clone & Build
+Development dependencies (Postgres + JetStream NATS):
 
 ```bash
-git clone https://github.com/Karthik-S-Salian/executor
-cd yourrepo
+docker compose up -d
+export DATABASE_URL=postgres://executor:executor@localhost:5432/executor
+export NATS_URL=nats://localhost:4222
+```
+
+## Build & Run
+
+```bash
 cargo build --release
+
+# terminal 1 — API (applies the schema on startup, creates the NATS stream)
+cargo run -p api
+
+# terminal 2 — worker (Linux + isolate)
+cargo run -p worker
 ```
 
-### Run Server
+The schema in `sql/up.sql` is applied automatically on API **and** worker startup
+(idempotent). For real deployments, run it as a versioned migration instead.
 
-```bash
-sudo -E cargo run
-```
+## Environment variables
 
-> ⚠️ `sudo` is required because `isolate` needs root access to create sandboxes.
+| Variable | Used by | Default |
+|---|---|---|
+| `DATABASE_URL` | api, worker | required |
+| `NATS_URL` | api, worker | `nats://localhost:4222` |
+| `BIND_ADDR` | api | `0.0.0.0:3000` |
+| `EXECUTOR_CONFIG_PATH` | api | `config.toml` |
+| `WORKER_CONFIG_PATH` | worker | `config.toml` |
+| `ISOLATE_BIN` | worker | `isolate` |
 
-## 📡 API Endpoint
+Worker config (`WORKER_CONFIG_PATH`) supports `num_workers`; it defaults to the
+number of CPUs. API config holds languages and submission defaults — see
+`api/config.toml`.
+
+## API
+
+Swagger UI: `http://localhost:3000/docs`, spec: `http://localhost:3000/openapi.json`,
+health: `GET /health`.
 
 ### `POST /submissions/new`
-
-Send a code submission for execution.
-
-#### Sample Request
 
 ```bash
 curl -X POST http://localhost:3000/submissions/new \
   -H 'Content-Type: application/json' \
   -d '{
     "source_code": "print(\"hello world\")",
-    "language": "py",
+    "language": "python",
     "stdin": "",
     "expected_output": "hello world",
     "cpu_time_limit": 1,
-    "memory_limit": 1000000,
-    "redirect_stderr_to_stdout": true,
-    "enable_network": false
+    "memory_limit": 128000,
+    "number_of_runs": 1
   }'
 ```
 
-## 🧱 Project Structure
+Response: `{"id": "<uuid>"}`. Missing limits are filled from
+`submission_defaults` in `api/config.toml`.
 
-- `src/main.rs` – HTTP server entry point.
-- `src/sandbox.rs` – Handles isolate init/run/cleanup and resource config.
-- `src/io_utils.rs` – Manages file I/O (source, stdin, stdout, etc).
-- `src/verify.rs` – Verifies output and determines result status.
-- `src/model.rs` – Common data models and request types.
-- `isolate` – External dependency for sandboxing.
+Not supported yet (rejected with `400`): `additional_files`, `callback_url`,
+per-process time/memory limits. Network access is only allowed when both the
+request and the language config allow it.
 
-## 📄 Supported Languages
+### `GET /submissions/:id`
 
-Add language configs to a JSON or hardcoded table:
+Returns the submission with its current status and, once finished,
+`stdout`, `stderr`, `compile_output`, `exit_code`, `exit_signal`, `time`,
+`wall_time`, `memory`, `message`, `finished_at`.
+
+### `GET /languages/`
+
+Returns configured language names.
+
+## Statuses
+
+`inqueue`, `processing`, `accepted`, `wronganswer`, `timelimitexceeded`,
+`compilationerror`, `runtimeerrorsigsegv`, `runtimeerrorsigxfsz`,
+`runtimeerrorsigfpe`, `runtimeerrorsigabrt`, `runtimeerrornzec`,
+`runtimeerrorother`, `internalerror`, `execformaterror`.
+
+## Language configuration
 
 ```toml
 [[languages]]
@@ -89,14 +135,28 @@ run_cmd = "./main"
 allow_network = false
 ```
 
-## 🧹 Cleanup & Security
+`compile_cmd`/`run_cmd` can also be read from files with `compile_cmd_file` /
+`run_cmd_file`. User-supplied `compiler_options` and `command_line_arguments` are
+split into arguments and shell-quoted before being placed in the sandbox script.
 
-- Isolate directories (`/var/lib/isolate/`) are cleaned after every run.
-- Code sanitization strips dangerous characters from user input (e.g., `$`, `&`, `;`, `|`, etc).
-- Each submission runs in its own isolated box.
+## Security notes
 
-## 📜 License
+- Each run gets a fresh isolate box (namespaces + cgroups) with CPU, wall time,
+  memory, stack, file size and process limits; network is off unless requested
+  and allowed by the language config.
+- The worker must run with the privileges isolate needs. Keep the API off the
+  sandbox host, or at least off the privileged user.
+- User options are quoted, not interpolated raw, but the sandbox remains the
+  security boundary: do not treat `isolate` as protection against kernel exploits.
+- `callback_url` is not implemented; no outbound HTTP is made.
 
-MIT License
+## Testing
 
----
+```bash
+cargo test --workspace     # no Postgres/NATS/isolate needed
+cargo check --workspace
+```
+
+## License
+
+MIT
