@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use common::nats::{NatsClient, NatsConsumer};
+use common::db::Db;
+use common::nats::{NatsClient, NatsConsumer, SUBMISSION_STREAM, SUBMISSION_SUBJECT};
 use tokio::sync::Mutex;
 
 use crate::{config::load_config, workers::spawn_workers};
@@ -15,8 +16,11 @@ pub struct BoxIdManager {
 
 impl BoxIdManager {
     pub fn new() -> Self {
+        // Random start so restarts do not reuse a box id a crashed run still holds.
+        // isolate allows box ids 0..max_boxes (default 1000).
+        let seed = (uuid::Uuid::new_v4().as_u128() % 1000) as u32;
         Self {
-            next: Mutex::new(0),
+            next: Mutex::new(seed),
         }
     }
 
@@ -30,26 +34,31 @@ impl BoxIdManager {
 
 struct AppState {
     box_counter: BoxIdManager,
-    queue:NatsConsumer
+    queue: NatsConsumer,
+    db: Db,
 }
-
-impl AppState {}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = load_config();
-    let client = NatsClient::new("localhost").await?;
+
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL not found");
+    let nats_url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
+
+    let client = NatsClient::new(&nats_url).await?;
     let queue = NatsConsumer::new(
         &client,
-        "SUBMISSIONS",
-        "submission.new",
+        SUBMISSION_STREAM,
+        SUBMISSION_SUBJECT,
         "submissions",
     )
     .await?;
 
     let app_state = Arc::new(AppState {
         box_counter: BoxIdManager::new(),
-        queue
+        queue,
+        db: Db::init(&database_url).await.expect("could not init db"),
     });
 
     spawn_workers(app_state, config.num_workers as usize).await?;
