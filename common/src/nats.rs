@@ -1,7 +1,10 @@
 use anyhow::{Result, anyhow};
 use async_nats::jetstream::consumer::{AckPolicy, DeliverPolicy, PullConsumer};
-use async_nats::jetstream::{self, Context, stream::RetentionPolicy, stream::StorageType};
+use async_nats::jetstream::{self, AckKind, Context, stream::RetentionPolicy, stream::StorageType};
 use futures::StreamExt;
+
+pub const SUBMISSION_STREAM: &str = "SUBMISSIONS";
+pub const SUBMISSION_SUBJECT: &str = "submission.new";
 
 #[derive(Clone)]
 pub struct NatsClient {
@@ -19,12 +22,49 @@ impl NatsClient {
         self.js.publish(subject.clone(), data.into()).await?;
         Ok(())
     }
+
+    /// Creates the work-queue stream if it does not exist. Producer-side setup,
+    /// so publishing never depends on a worker having started first.
+    pub async fn ensure_stream(&self, stream: &str, subject: &str) -> Result<()> {
+        self.js
+            .get_or_create_stream(jetstream::stream::Config {
+                name: stream.to_string(),
+                subjects: vec![subject.to_string()],
+                storage: StorageType::File,
+                retention: RetentionPolicy::WorkQueue,
+                ..Default::default()
+            })
+            .await?;
+        Ok(())
+    }
+}
+
+/// A pulled message. Ack/nak only after the job is actually handled.
+pub struct NatsJob {
+    msg: jetstream::Message,
+}
+
+impl NatsJob {
+    pub fn payload(&self) -> &[u8] {
+        &self.msg.payload
+    }
+
+    pub async fn ack(&self) -> Result<()> {
+        self.msg
+            .ack()
+            .await
+            .map_err(|e| anyhow!("error acknowledging message: {}", e))
+    }
+
+    pub async fn nak(&self) -> Result<()> {
+        self.msg
+            .ack_with(AckKind::Nak(None))
+            .await
+            .map_err(|e| anyhow!("error nacking message: {}", e))
+    }
 }
 
 pub struct NatsConsumer {
-    js: Context,
-    stream: String,
-    subject: String,
     consumer: PullConsumer,
 }
 
@@ -35,15 +75,11 @@ impl NatsConsumer {
         subject: &str,
         durable: &str,
     ) -> Result<Self> {
+        nats.ensure_stream(stream, subject).await?;
+
         let consumer: PullConsumer = nats
             .js
-            .get_or_create_stream(jetstream::stream::Config {
-                name: stream.to_string(),
-                subjects: vec![subject.to_string()],
-                storage: StorageType::Memory,
-                retention: RetentionPolicy::WorkQueue,
-                ..Default::default()
-            })
+            .get_stream(stream)
             .await?
             .get_or_create_consumer(
                 durable,
@@ -51,32 +87,24 @@ impl NatsConsumer {
                     durable_name: Some(durable.to_string()),
                     deliver_policy: DeliverPolicy::All,
                     ack_policy: AckPolicy::Explicit,
-                    // filter_subject: subject.to_string(),
-                    max_ack_pending: 1,
+                    max_ack_pending: 1024,
+                    max_deliver: 5,
                     ..Default::default()
                 },
             )
             .await?;
 
-        Ok(Self {
-            js: nats.js.clone(),
-            stream: stream.to_string(),
-            subject: subject.to_string(),
-            consumer,
-        })
+        Ok(Self { consumer })
     }
 
-    pub async fn pull(&self) -> Result<Option<Vec<u8>>> {
+    pub async fn pull(&self) -> Result<Option<NatsJob>> {
+        // shortcut: one pull request per job. Batch this if pull overhead ever
+        // shows up in throughput.
         let mut messages = self.consumer.messages().await?.take(1);
-        if let Some(Ok(msg)) = messages.next().await {
-            let payload = msg.payload.to_vec();
-            let _ = msg
-                .ack()
-                .await
-                .map_err(|e| anyhow!("error acknowledging message: {}", e))?;
-            Ok(Some(payload))
-        } else {
-            Ok(None)
+        match messages.next().await {
+            Some(Ok(msg)) => Ok(Some(NatsJob { msg })),
+            Some(Err(e)) => Err(anyhow!("error pulling message: {}", e)),
+            None => Ok(None),
         }
     }
 }
