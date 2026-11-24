@@ -63,3 +63,19 @@ CREATE TABLE IF NOT EXISTS submissions (
   wall_time DOUBLE PRECISION,
   memory DOUBLE PRECISION
 );
+
+-- Kept up to date on claim/finish so the sweeper can detect dead workers.
+ALTER TABLE submissions
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+-- Used by the requeue sweeper.
+CREATE INDEX IF NOT EXISTS submissions_inqueue_created_at_idx
+  ON submissions (created_at)
+  WHERE status = 'inqueue';
+
+CREATE INDEX IF NOT EXISTS submissions_processing_updated_at_idx
+  ON submissions (updated_at)
+  WHERE status = 'processing';
+
+CREATE INDEX IF NOT EXISTS submissions_language_status_idx
+  ON submissions (language, status);
