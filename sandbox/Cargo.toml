@@ -1,0 +1,8 @@
+[package]
+name = "sandbox"
+version = "0.1.0"
+edition = "2024"
+description = "Rootless Linux confinement for untrusted code (namespaces, cgroup v2, seccomp, Landlock)"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
